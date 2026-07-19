@@ -1,0 +1,20 @@
+[package]
+name = "lanyarrs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+config = "0.15.25"
+futures-util = "0.3.33"
+regex = "1.13.1"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.150", features = ["raw_value"] }
+serde_repr = "0.1.21"
+thiserror = "2.0.19"
+time = { version = "0.3.53", features = ["macros"] }
+tokio = { version = "1.53.0", features = ["full"] }
+tokio-tungstenite = { version = "0.30.0", features = ["native-tls"] }
+tokio-util = "0.7.18"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["local-time"] }
+validator = { version = "0.20.0", features = ["derive"] }
