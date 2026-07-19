@@ -1,0 +1,17 @@
+version: "3"
+
+services:
+  valkey:
+    image: valkey/valkey:9
+    container_name: lanyarrs_valkey
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey_data:/data
+    environment:
+      - VALKEY_PASSWORD=hunter2
+    command: valkey-server --appendonly yes --requirepass ${VALKEY_PASSWORD}
+
+volumes:
+  valkey_data:

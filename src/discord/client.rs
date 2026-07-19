@@ -10,11 +10,12 @@ use tokio::time::MissedTickBehavior;
 use tokio::{select, sync::mpsc::Sender};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{error, info, instrument, warn};
 
 use crate::{
     config,
     discord::types::{Opcode, Presence, User, event_type},
+    storage,
 };
 
 #[derive(Debug, Error)]
@@ -28,6 +29,7 @@ enum ClientError {
 #[derive(Clone)]
 pub struct Client {
     config: config::AppConfig,
+    storage: storage::Storage,
     tx: Sender<WsMessage>,
     token: CancellationToken,
     sequence: Arc<Mutex<Option<i64>>>,
@@ -90,9 +92,15 @@ struct GuildCreateData {
 }
 
 impl Client {
-    pub fn new(config: config::AppConfig, tx: Sender<WsMessage>, token: CancellationToken) -> Self {
+    pub fn new(
+        config: config::AppConfig,
+        storage: storage::Storage,
+        tx: Sender<WsMessage>,
+        token: CancellationToken,
+    ) -> Self {
         Self {
             config,
+            storage,
             tx,
             token,
             sequence: Arc::new(Mutex::new(None)),
@@ -125,8 +133,8 @@ impl Client {
             (Opcode::Hello, _) => self.handle_hello(msg.d).await,
             (Opcode::HeartbeatAck, _) => info!("received heartbeat ack"),
             (_, Some(event_type::READY)) => self.handle_ready(msg.d),
-            (_, Some(event_type::GUILD_CREATE)) => self.handle_guild_create(msg.d),
-            (_, Some(event_type::PRESENCE_UPDATE)) => self.handle_presence_update(msg.d),
+            (_, Some(event_type::GUILD_CREATE)) => self.handle_guild_create(msg.d).await,
+            (_, Some(event_type::PRESENCE_UPDATE)) => self.handle_presence_update(msg.d).await,
             _ => warn!(op = ?msg.op, t = ?msg.t, "received unhandled message"),
         }
     }
@@ -231,7 +239,7 @@ impl Client {
         info!(session_id = %ready.session_id, user = format!("{}#{}", ready.user.username, ready.user.discriminator), "ready event received");
     }
 
-    fn handle_guild_create(&self, data: Option<&RawValue>) {
+    async fn handle_guild_create(&self, data: Option<&RawValue>) {
         let Some(data) = data else { return };
         let guild: GuildCreateData = match serde_json::from_str(data.get()) {
             Ok(g) => g,
@@ -247,13 +255,13 @@ impl Client {
 
         let users: Vec<User> = guild.members.into_iter().map(|m| m.user).collect();
 
-        // TODO: store users in some kind of state
-        debug!(users = ?users, "guild create event received");
+        self.storage.set_users(&users).await;
+        self.storage.set_presences(&guild.presences).await;
 
         info!("guild create event received");
     }
 
-    fn handle_presence_update(&self, data: Option<&RawValue>) {
+    async fn handle_presence_update(&self, data: Option<&RawValue>) {
         let Some(data) = data else { return };
         let presence: Presence = match serde_json::from_str(data.get()) {
             Ok(p) => p,
@@ -269,8 +277,9 @@ impl Client {
             return;
         }
 
-        // TODO: store presence in some kind of state
-        debug!(presence = ?presence, "presence update event received");
+        let user_id = presence.user.id.clone();
+        self.storage.set_presence(&presence).await;
+        self.storage.publish_update(&user_id).await;
 
         info!("presence update event received");
     }

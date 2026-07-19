@@ -12,7 +12,6 @@ static NUMERIC_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\d+$").un
 pub(crate) struct DiscordConfig {
     #[validate(length(min = 1))]
     pub bot_token: String,
-    // numeric
     #[validate(length(min = 1), regex(path = *NUMERIC_REGEX))]
     pub guild_id: String,
 }
@@ -20,6 +19,8 @@ pub(crate) struct DiscordConfig {
 #[derive(Debug, Clone, Deserialize, Validate)]
 pub(crate) struct AppConfig {
     pub discord: DiscordConfig,
+    #[validate(length(min = 1), url)]
+    pub redis_url: String,
 }
 
 #[derive(Debug, Error)]

@@ -1,18 +1,19 @@
 use std::env;
-use std::process::exit;
 
 use time::macros::format_description;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info};
+use tracing::info;
 use tracing_subscriber::fmt;
 use tracing_subscriber::fmt::time::LocalTime;
 
 use crate::config::AppConfig;
 use crate::discord::Gateway;
+use crate::storage::Storage;
 
 mod config;
 mod discord;
+mod storage;
 
 fn setup_logging() {
     let is_debug = env!("PROFILE") == "debug";
@@ -35,13 +36,11 @@ fn setup_logging() {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     setup_logging();
 
-    let app_config = AppConfig::new().unwrap_or_else(|e| {
-        error!("failed to load configuration: {}", e);
-        exit(1);
-    });
+    let app_config = AppConfig::new()?;
+    let storage = Storage::connect(&app_config).await?;
 
     let token = CancellationToken::new();
     {
@@ -53,7 +52,9 @@ async fn main() {
         });
     }
 
-    Gateway::new(app_config).run(token).await;
+    Gateway::new(app_config, storage).run(token).await;
+
+    Ok(())
 }
 
 async fn shutdown_signal() {

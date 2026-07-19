@@ -7,7 +7,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, instrument, warn};
 
-use crate::{config, discord::client};
+use crate::{config, discord::client, storage};
 
 const SOCKET_URL: &str = "wss://gateway.discord.gg/?v=10&encoding=json";
 
@@ -47,11 +47,12 @@ impl Backoff {
 
 pub struct Gateway {
     config: config::AppConfig,
+    storage: storage::Storage,
 }
 
 impl Gateway {
-    pub fn new(config: config::AppConfig) -> Self {
-        Self { config }
+    pub fn new(config: config::AppConfig, storage: storage::Storage) -> Self {
+        Self { config, storage }
     }
 
     pub async fn run(self, token: CancellationToken) {
@@ -100,7 +101,8 @@ impl Gateway {
             }
         });
 
-        let client = client::Client::new(self.config.clone(), tx, token.clone());
+        let client =
+            client::Client::new(self.config.clone(), self.storage.clone(), tx, token.clone());
 
         let result: Result<(), GatewayError> = loop {
             select! {
