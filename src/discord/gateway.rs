@@ -14,9 +14,9 @@ const SOCKET_URL: &str = "wss://gateway.discord.gg/?v=10&encoding=json";
 #[derive(Debug, Error)]
 pub enum GatewayError {
     #[error("dial: {0}")]
-    DialError(#[from] tokio_tungstenite::tungstenite::Error),
+    Dial(#[from] tokio_tungstenite::tungstenite::Error),
     #[error("read: {0}")]
-    ReadError(tokio_tungstenite::tungstenite::Error),
+    Read(tokio_tungstenite::tungstenite::Error),
 }
 
 struct Backoff {
@@ -113,8 +113,8 @@ impl Gateway {
                 msg = read.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => client.handle_message(text.as_bytes()).await,
-                        Some(Ok(_)) => {}, // hanlded internally
-                        Some(Err(e)) => break Err(GatewayError::ReadError(e)),
+                        Some(Ok(_)) => {}, // handled internally
+                        Some(Err(e)) => break Err(GatewayError::Read(e)),
                         None => break Ok(()), // stream closed
                     }
                 }
