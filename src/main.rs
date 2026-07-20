@@ -11,6 +11,7 @@ use crate::config::AppConfig;
 use crate::discord::Gateway;
 use crate::storage::Storage;
 
+mod api;
 mod config;
 mod discord;
 mod storage;
@@ -49,6 +50,15 @@ async fn main() -> anyhow::Result<()> {
             shutdown_signal().await;
             info!("shutting down");
             token.cancel();
+        });
+    }
+
+    {
+        let token = token.clone();
+        let app_config = app_config.clone();
+        let storage = storage.clone();
+        tokio::spawn(async move {
+            api::new(app_config, storage, token).await.unwrap();
         });
     }
 

@@ -3,4 +3,4 @@ mod gateway;
 mod types;
 
 pub use gateway::Gateway;
-pub use types::{Presence, User};
+pub use types::{Activity, ActivityType, Presence, Timestamps, User};
