@@ -1,10 +1,13 @@
 use std::sync::Arc;
 
-use axum::{Router, routing::get};
+use axum::{Router, middleware, routing::get};
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
-use crate::{api::routes, config, storage};
+use crate::{
+    api::{middlewares, routes},
+    config, storage,
+};
 
 pub struct RouterState {
     pub storage: storage::Storage,
@@ -21,6 +24,7 @@ pub async fn new(
         .route("/", get(|| async { "Hello, World" }))
         .route("/user/{id}", get(routes::get_user))
         .route("/socket", get(routes::socket))
+        .layer(middleware::from_fn(middlewares::request_id))
         .with_state(shared_state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.api.port)).await?;
