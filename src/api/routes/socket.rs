@@ -27,7 +27,7 @@ use crate::{
 };
 
 const HEARTBEAT_INTERVAL_MS: u64 = 10_000;
-const HEARTBEAT_TICK: Duration = Duration::from_secs(10);
+const HEARTBEAT_TICK: Duration = Duration::from_millis(HEARTBEAT_INTERVAL_MS);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(30);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -84,27 +84,52 @@ pub async fn socket(
     ws.on_upgrade(move |socket| serve(socket, state.storage.clone()))
 }
 
+struct Heartbeat {
+    ticker: time::Interval,
+    last_beat: Instant,
+}
+
+impl Heartbeat {
+    async fn start() -> Self {
+        let last_beat = Instant::now();
+        let mut ticker = time::interval(HEARTBEAT_TICK);
+        ticker.tick().await;
+        Self { ticker, last_beat }
+    }
+
+    fn beat(&mut self) {
+        self.last_beat = Instant::now();
+    }
+
+    async fn is_alive(&mut self) -> bool {
+        self.ticker.tick().await;
+        self.last_beat.elapsed() <= HEARTBEAT_TIMEOUT
+    }
+}
+
 async fn serve(socket: WebSocket, storage: Storage) {
     let (sink, mut stream) = socket.split();
-
     let (tx, rx) = mpsc::channel::<WsMessage>(32);
     let writer = tokio::spawn(write_loop(sink, rx));
 
-    if !send_hello(&tx).await {
-        drop(tx);
-        let _ = writer.await;
+    run_session(&mut stream, &tx, storage).await;
+
+    drop(tx);
+    let _ = writer.await;
+}
+
+async fn run_session(
+    stream: &mut SplitStream<WebSocket>,
+    tx: &mpsc::Sender<WsMessage>,
+    storage: Storage,
+) {
+    if !send_hello(tx).await {
         return;
     }
 
-    let mut last_heartbeat = Instant::now();
-    let mut ticker = time::interval(HEARTBEAT_TICK);
-    ticker.tick().await;
+    let mut heartbeat = Heartbeat::start().await;
 
-    let Some(subscribe_to_id) =
-        read_initialize(&mut stream, &mut ticker, &mut last_heartbeat).await
-    else {
-        drop(tx);
-        let _ = writer.await;
+    let Some(subscribe_to_id) = read_initialize(stream, &mut heartbeat).await else {
         return;
     };
 
@@ -117,7 +142,7 @@ async fn serve(socket: WebSocket, storage: Storage) {
                 seq: sequence,
                 d: ResponseData::build(user, presence),
             };
-            send_json(&tx, &msg).await;
+            send_json(tx, &msg).await;
         }
         None => debug!("no initial presence available"),
     }
@@ -136,13 +161,11 @@ async fn serve(socket: WebSocket, storage: Storage) {
         }
     };
 
-    read_loop(&mut stream, ticker, last_heartbeat).await;
+    read_loop(stream, heartbeat).await;
 
     if let Some(forwarder) = forwarder {
         forwarder.abort();
     }
-    drop(tx);
-    let _ = writer.await;
 }
 
 async fn write_loop(mut sink: SplitSink<WebSocket, WsMessage>, mut rx: mpsc::Receiver<WsMessage>) {
@@ -189,13 +212,12 @@ async fn send_hello(tx: &mpsc::Sender<WsMessage>) -> bool {
 
 async fn read_initialize(
     stream: &mut SplitStream<WebSocket>,
-    ticker: &mut time::Interval,
-    last_heartbeat: &mut Instant,
+    heartbeat: &mut Heartbeat,
 ) -> Option<String> {
     loop {
         tokio::select! {
-            _ = ticker.tick() => {
-                if last_heartbeat.elapsed() > HEARTBEAT_TIMEOUT {
+            alive = heartbeat.is_alive() => {
+                if !alive {
                     debug!("heartbeat timeout during handshake, closing connection");
                     return None;
                 }
@@ -223,9 +245,7 @@ async fn read_initialize(
                 };
 
                 match parsed.op {
-                    Opcode::Heartbeat => {
-                        *last_heartbeat = Instant::now();
-                    }
+                    Opcode::Heartbeat => heartbeat.beat(),
                     Opcode::Initialize => {
                         let data = parsed.d?;
                         return match serde_json::from_str::<InitializeData>(data.get()) {
@@ -247,7 +267,9 @@ async fn read_initialize(
 }
 
 async fn fetch_user_presence(storage: &Storage, id: &str) -> Option<(User, Presence)> {
-    let user = match storage.get_user(id).await {
+    let (user, presence) = tokio::join!(storage.get_user(id), storage.get_presence(id));
+
+    let user = match user {
         Ok(Some(u)) => u,
         Ok(None) => return None,
         Err(e) => {
@@ -255,7 +277,7 @@ async fn fetch_user_presence(storage: &Storage, id: &str) -> Option<(User, Prese
             return None;
         }
     };
-    let presence = match storage.get_presence(id).await {
+    let presence = match presence {
         Ok(Some(p)) => p,
         Ok(None) => return None,
         Err(e) => {
@@ -263,6 +285,7 @@ async fn fetch_user_presence(storage: &Storage, id: &str) -> Option<(User, Prese
             return None;
         }
     };
+
     Some((user, presence))
 }
 
@@ -296,34 +319,26 @@ async fn forward_updates(
     }
 }
 
-async fn read_loop(
-    stream: &mut SplitStream<WebSocket>,
-    mut ticker: time::Interval,
-    mut last_heartbeat: Instant,
-) {
+async fn read_loop(stream: &mut SplitStream<WebSocket>, mut heartbeat: Heartbeat) {
     loop {
         tokio::select! {
-            _ = ticker.tick() => {
-                if last_heartbeat.elapsed() > HEARTBEAT_TIMEOUT {
+            alive = heartbeat.is_alive() => {
+                if !alive {
                     debug!("heartbeat timeout, closing connection");
                     return;
                 }
-            },
+            }
             msg = stream.next() => {
                 match msg {
-                    Some(Ok(WsMessage::Text(text))) => {
-                        match serde_json::from_str::<IncomingMessage>(&text) {
-                            Ok(m) if m.op == Opcode::Heartbeat => {
-                                last_heartbeat = Instant::now();
-                            }
-                            Ok(m) if m.op == Opcode::Unsubscribe => {
-                                debug!("unsubscribing from updates");
-                                return;
-                            }
-                            Ok(m) => debug!(op = ?m.op, "unknown opcode"),
-                            Err(e) => error!(error = %e, "failed to decode message"),
+                    Some(Ok(WsMessage::Text(text))) => match serde_json::from_str::<IncomingMessage>(&text) {
+                        Ok(IncomingMessage { op: Opcode::Heartbeat, .. }) => heartbeat.beat(),
+                        Ok(IncomingMessage { op: Opcode::Unsubscribe, .. }) => {
+                            debug!("unsubscribing from updates");
+                            return;
                         }
-                    }
+                        Ok(m) => debug!(op = ?m.op, "unknown opcode"),
+                        Err(e) => error!(error = %e, "failed to decode message"),
+                    },
                     Some(Ok(WsMessage::Close(_))) | None => {
                         debug!("websocket closed by client");
                         return;
