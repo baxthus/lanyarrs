@@ -170,7 +170,6 @@ impl Client {
     async fn send_identify(&self) {
         let data = IdentifyData {
             token: self.config.discord.bot_token.clone(),
-            // intents: 1 | 2 | 256, // GUILDS | GUILD_MEMBERS | GUILD_PRESENCES
             intents: 1 << 0 | 1 << 1 | 1 << 8, // GUILDS | GUILD_MEMBERS | GUILD_PRESENCES
             properties: IdentifyProperties {
                 os: "linux",

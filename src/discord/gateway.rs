@@ -7,7 +7,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, instrument, warn};
 
-use crate::{config, discord::client, storage};
+use crate::{config, discord::client::Client, storage};
 
 const SOCKET_URL: &str = "wss://gateway.discord.gg/?v=10&encoding=json";
 
@@ -101,8 +101,7 @@ impl Gateway {
             }
         });
 
-        let client =
-            client::Client::new(self.config.clone(), self.storage.clone(), tx, token.clone());
+        let client = Client::new(self.config.clone(), self.storage.clone(), tx, token.clone());
 
         let result: Result<(), GatewayError> = loop {
             select! {

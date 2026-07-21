@@ -20,6 +20,7 @@ pub async fn new(
     let app = Router::new()
         .route("/", get(|| async { "Hello, World" }))
         .route("/user/{id}", get(routes::get_user))
+        .route("/socket", get(routes::socket))
         .with_state(shared_state);
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", config.api.port)).await?;

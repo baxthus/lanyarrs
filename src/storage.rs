@@ -47,10 +47,10 @@ impl Storage {
         Ok(Self { client, conn })
     }
 
-    pub async fn set_user(&self, user: &User) {
-        self.set_json(user_key(&user.id), user, "failed to set user in redis")
-            .await;
-    }
+    // pub async fn set_user(&self, user: &User) {
+    //     self.set_json(user_key(&user.id), user, "failed to set user in redis")
+    //         .await;
+    // }
 
     pub async fn set_users(&self, users: &[User]) {
         let pairs = self.serialize_pairs(users, |u| user_key(&u.id), "failed to serialize users");
@@ -93,7 +93,7 @@ impl Storage {
     pub async fn subscribe_updates(
         &self,
         id: &str,
-    ) -> Result<impl Stream<Item = String>, StorageError> {
+    ) -> Result<impl Stream<Item = String> + 'static, StorageError> {
         use futures_util::StreamExt;
 
         let mut pubsub = self.client.get_async_pubsub().await?;
