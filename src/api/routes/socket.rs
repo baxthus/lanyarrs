@@ -17,7 +17,7 @@ use futures_util::{
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 use serde_repr::{Deserialize_repr, Serialize_repr};
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time};
 use tracing::{debug, error};
 
 use crate::{
@@ -29,6 +29,7 @@ use crate::{
 const HEARTBEAT_INTERVAL_MS: u64 = 10_000;
 const HEARTBEAT_TICK: Duration = Duration::from_secs(10);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(30);
+const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, PartialEq, Serialize_repr, Deserialize_repr)]
 #[repr(u8)]
@@ -90,10 +91,20 @@ async fn serve(socket: WebSocket, storage: Storage) {
     let writer = tokio::spawn(write_loop(sink, rx));
 
     if !send_hello(&tx).await {
+        drop(tx);
+        let _ = writer.await;
         return;
     }
 
-    let Some(subscribe_to_id) = read_initialize(&mut stream).await else {
+    let mut last_heartbeat = Instant::now();
+    let mut ticker = time::interval(HEARTBEAT_TICK);
+    ticker.tick().await;
+
+    let Some(subscribe_to_id) =
+        read_initialize(&mut stream, &mut ticker, &mut last_heartbeat).await
+    else {
+        drop(tx);
+        let _ = writer.await;
         return;
     };
 
@@ -125,7 +136,7 @@ async fn serve(socket: WebSocket, storage: Storage) {
         }
     };
 
-    read_loop(&mut stream).await;
+    read_loop(&mut stream, ticker, last_heartbeat).await;
 
     if let Some(forwarder) = forwarder {
         forwarder.abort();
@@ -138,8 +149,13 @@ async fn write_loop(mut sink: SplitSink<WebSocket, WsMessage>, mut rx: mpsc::Rec
     use futures_util::SinkExt;
 
     while let Some(msg) = rx.recv().await {
-        if sink.send(msg).await.is_err() {
-            break;
+        match time::timeout(WRITE_TIMEOUT, sink.send(msg)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => break,
+            Err(_) => {
+                debug!("write timed out, closing connection");
+                break;
+            }
         }
     }
 }
@@ -171,42 +187,61 @@ async fn send_hello(tx: &mpsc::Sender<WsMessage>) -> bool {
     true
 }
 
-async fn read_initialize(stream: &mut SplitStream<WebSocket>) -> Option<String> {
-    let text = match stream.next().await {
-        Some(Ok(WsMessage::Text(text))) => text,
-        Some(Ok(WsMessage::Close(_))) | None => {
-            debug!("websocket closed by client");
-            return None;
-        }
-        Some(Ok(_)) => {
-            debug!("expected initialize message");
-            return None;
-        }
-        Some(Err(e)) => {
-            error!(error = %e, "failed to read initialize message");
-            return None;
-        }
-    };
+async fn read_initialize(
+    stream: &mut SplitStream<WebSocket>,
+    ticker: &mut time::Interval,
+    last_heartbeat: &mut Instant,
+) -> Option<String> {
+    loop {
+        tokio::select! {
+            _ = ticker.tick() => {
+                if last_heartbeat.elapsed() > HEARTBEAT_TIMEOUT {
+                    debug!("heartbeat timeout during handshake, closing connection");
+                    return None;
+                }
+            }
+            msg = stream.next() => {
+                let text = match msg {
+                    Some(Ok(WsMessage::Text(text))) => text,
+                    Some(Ok(WsMessage::Close(_))) | None => {
+                        debug!("websocket closed by client");
+                        return None;
+                    }
+                    Some(Ok(_)) => continue,
+                    Some(Err(e)) => {
+                        debug!(error = %e, "failed to read initialize message");
+                        return None;
+                    }
+                };
 
-    let msg: IncomingMessage = match serde_json::from_str(&text) {
-        Ok(m) => m,
-        Err(e) => {
-            error!(error = %e, "failed to decode initialize message");
-            return None;
-        }
-    };
+                let parsed: IncomingMessage = match serde_json::from_str(&text) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        debug!(error = %e, "failed to decode initialize message");
+                        return None;
+                    }
+                };
 
-    if msg.op != Opcode::Initialize {
-        debug!(op = ?msg.op, "expected initialize message");
-        return None;
-    }
-
-    let data = msg.d?;
-    match serde_json::from_str::<InitializeData>(data.get()) {
-        Ok(d) => Some(d.subscribe_to_id),
-        Err(e) => {
-            error!(error = %e, "failed to decode initialize message");
-            None
+                match parsed.op {
+                    Opcode::Heartbeat => {
+                        *last_heartbeat = Instant::now();
+                    }
+                    Opcode::Initialize => {
+                        let data = parsed.d?;
+                        return match serde_json::from_str::<InitializeData>(data.get()) {
+                            Ok(d) => Some(d.subscribe_to_id),
+                            Err(e) => {
+                                debug!(error = %e, "failed to decode initialize message");
+                                None
+                            }
+                        };
+                    }
+                    other => {
+                        debug!(op = ?other, "expected initialize message");
+                        return None;
+                    }
+                }
+            }
         }
     }
 }
@@ -261,16 +296,16 @@ async fn forward_updates(
     }
 }
 
-async fn read_loop(stream: &mut SplitStream<WebSocket>) {
-    let mut last_heartbeat = Instant::now();
-    let mut ticker = tokio::time::interval(HEARTBEAT_TICK);
-    ticker.tick().await;
-
+async fn read_loop(
+    stream: &mut SplitStream<WebSocket>,
+    mut ticker: time::Interval,
+    mut last_heartbeat: Instant,
+) {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
                 if last_heartbeat.elapsed() > HEARTBEAT_TIMEOUT {
-                    debug!("heartbeat timout, closing connection");
+                    debug!("heartbeat timeout, closing connection");
                     return;
                 }
             },
