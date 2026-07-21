@@ -1,11 +1,9 @@
-use std::env;
-
 use time::macros::format_description;
 use tokio::select;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
-use tracing_subscriber::fmt;
 use tracing_subscriber::fmt::time::LocalTime;
+use tracing_subscriber::{EnvFilter, fmt};
 
 use crate::config::AppConfig;
 use crate::discord::Gateway;
@@ -15,26 +13,6 @@ mod api;
 mod config;
 mod discord;
 mod storage;
-
-fn setup_logging() {
-    let is_debug = env!("PROFILE") == "debug";
-
-    let timer = LocalTime::new(format_description!(
-        "[year]-[month]-[day] [hour]:[minute]:[second]"
-    ));
-
-    fmt()
-        .with_max_level(if is_debug {
-            tracing::Level::DEBUG
-        } else {
-            tracing::Level::INFO
-        })
-        .with_timer(timer)
-        .pretty()
-        .with_target(false)
-        .with_file(false)
-        .init();
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -65,6 +43,26 @@ async fn main() -> anyhow::Result<()> {
     Gateway::new(app_config, storage).run(token).await;
 
     Ok(())
+}
+
+fn setup_logging() {
+    let filter = EnvFilter::builder().try_from_env().unwrap_or_else(|_| {
+        EnvFilter::builder()
+            .with_default_directive(tracing::Level::WARN.into())
+            .parse("lanyarrs=debug")
+            .unwrap()
+    });
+
+    let timer = LocalTime::new(format_description!(
+        "[year]-[month]-[day] [hour]:[minute]:[second]"
+    ));
+
+    fmt()
+        .with_env_filter(filter)
+        .with_timer(timer)
+        .with_target(false)
+        .pretty()
+        .init();
 }
 
 async fn shutdown_signal() {
